@@ -1,0 +1,132 @@
+/*
+ * Author: Daya S Khudia (dskhudia@umich.edu)
+ */
+
+#define DEBUG_TYPE "all"
+#include "llvm/Pass.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/Support/Debug.h"
+//#include "llvm/Analysis/ProfileInfo.h"
+#include "llvm/Support/CommandLine.h"
+#include "VP/VPLoadProfile.h"
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <string>
+#include <vector>
+#include <cmath>
+using namespace llvm;
+
+STATISTIC(stats, "Counts number of functions greeted");
+
+cl::opt<bool> localStats("localstats",
+                            cl::desc("print the statistic collected"),
+                            cl::init(false));
+
+#undef DEBUG_TYPE
+#define DEBUG_TYPE "vpAnalysis"
+//This pass is to test and analyze value profiling.
+namespace {
+  class vpAnalysis : public ModulePass{
+    public:
+      static char ID;
+      static bool flag;
+      bool runOnModule(Module &M);
+      virtual void getAnalysisUsage(AnalysisUsage &AU) const{
+        AU.setPreservesAll();
+        AU.addRequired<ProfileInfo>();
+        AU.addRequired<VPLoadProfile>();
+      }
+      vpAnalysis(): ModulePass(ID){
+      }
+    private:
+      static char* resultFile;
+      static char* rangeResultFile;
+      static unsigned long long invariantValues;
+      static unsigned long long preferedRanges;
+      ProfileInfo *PI;
+      VPLoadProfile *VP;
+  };
+}
+char vpAnalysis::ID = 0;
+bool vpAnalysis::flag = false;
+char* vpAnalysis::resultFile = "value_profiling.csv";
+char* vpAnalysis::rangeResultFile = "value_range.csv";
+unsigned long long vpAnalysis::invariantValues = 0;
+
+static RegisterPass<vpAnalysis>
+R("vp-analysis", "test and analyze the frequently occuring values");
+
+//ModulePass *llvm::createvpAnalysis(){
+//return new vpAnalysis();
+//}
+
+bool vpAnalysis::runOnModule(Module &M){
+  if(flag == true)
+    return false;
+  std::ofstream resultOut;
+  resultOut.open(resultFile);
+  PI = &getAnalysis<ProfileInfo>();
+  VP = &getAnalysis<VPLoadProfile>();
+  resultOut << "total,opcode,value1,count1,value2,count2,value3,count3,value4,count4" << "\n";
+  std::map<unsigned int, Instruction*>::iterator iter1;
+  for(iter1 = VP->IdToInstMap.begin(); iter1 != VP->IdToInstMap.end(); iter1++){
+    unsigned int id = iter1->first;
+    Instruction* cInst = iter1->second;
+    valueCountMap_t::iterator valCountIter;
+    DEBUG(dbgs() << "for instruction " << *cInst << "\n");
+    DEBUG(dbgs() << "there are " << VP->IdToValueCount[id]->size() << " values\n");
+    unsigned int execCount = PI->getExecutionCount(cInst->getParent());
+    resultOut << execCount << ",";
+    resultOut << cInst->getOpcodeName(cInst->getOpcode())<< ",";
+    DEBUG(dbgs() << "total Executions: " << execCount << "\n");
+    for(valCountIter = VP->IdToValueCount[id]->begin(); valCountIter != VP->IdToValueCount[id]->end();
+        valCountIter++){
+      int value = valCountIter->first;
+      unsigned int count = valCountIter->second;
+      double fractionOfTotal = (double)count/execCount;
+      if(fractionOfTotal >= 0.99){
+        //invariantValues += 1;
+        invariantValues += execCount;
+      }
+      resultOut << value << ",";
+      resultOut << std::setprecision(3) << (double)count/execCount << ",";
+      DEBUG(dbgs() << "\tthe value " << value << " occured " << (double)count/execCount << " times (%)\n");
+    }
+    resultOut << "\n";
+  }
+  if(localStats){
+    errs() << invariantValues << " Total invariant values\n";
+  }
+  resultOut.close();
+  resultOut.open(rangeResultFile);
+  resultOut << "total,opcode,lower1,upper1,count1,lower2,upper2,count2,lower3,upper3,count3,lower4,upper4,count4,lower5,upper5,count5" << "\n";
+  for(iter1 = VP->IdToInstMap.begin(); iter1 != VP->IdToInstMap.end(); iter1++){
+    unsigned int id = iter1->first;
+    Instruction* cInst = iter1->second;
+    unsigned int execCount = PI->getExecutionCount(cInst->getParent());
+    resultOut << execCount << ",";
+    resultOut << cInst->getOpcodeName(cInst->getOpcode())<< ",";
+    //resultOut << cInst->dump() << ",";
+    rangeCountVec_t::iterator rangeCountIter;
+    for(rangeCountIter = VP->IdToRangeCount[id]->begin(); rangeCountIter != VP->IdToRangeCount[id]->end(); rangeCountIter++){
+      range* rng = *rangeCountIter;
+      unsigned int count = rng->getCount();
+      double fractionOfTotal = (double)count/execCount;
+      resultOut << rng->getLowerRange() << "," << rng->getUpperRange() << ",";
+      resultOut << std::setprecision(3) << (double)count/execCount << ",";
+    }
+    resultOut << "\n";
+  }
+  flag = true;
+  resultOut.close();
+  return false;
+}
+
+#undef DEBUG_TYPE
+#define DEBUG_TYPE "all"
+
+

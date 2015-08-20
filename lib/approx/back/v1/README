@@ -1,0 +1,16 @@
+
+
+This is the version 1.0.
+
+In this version, we implemented FP duplication. However, there is a big problem, when phi nodes is integer type and it is used by the later FP instructions, if only FP instructions are duplicated.
+For example, if we have the following scalar code
+
+%phi1 = phi i32 [val0, label0] [val1, label1]
+%1 = sitofp i32 %phi1, double %2
+
+the corresponding vector code should be:
+
+%vphi = phi <2 * i32> [<2 x i32> val0, label0], [<2 x i32> val1, label1]
+%v1   = sitofp <2 x i32> %vphi, <2 x double> %2
+
+However, we won't have a vector version of the val0 and val1 if we only consider FP instructions. One solution, which also is used in this version, is to preserve all the phi nodes (probably only integer ones are sufficient) and generate a vector value of the lvalue. Therefore, instead of generating the vector type of the phi instruction in this example, we add one more instruction followed the %phi1, %phi2 = <2 x phi1>. Finally, all the reference to %phi1 are replaced by %phi2. This solution is very expensive because of at least two reasons. First, we have to introduce two insertelement instructions to construct the additional phi node. Second, we cannot remove these phi nodes in the instructure removal pass because there are uses of them. Even worst, there might be a long def-use chain until we meet the scalar phi node. In this case, all the scalar instructions along with the def-use chain have to be kept. 

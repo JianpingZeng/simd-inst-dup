@@ -1,0 +1,14 @@
+# Don't do -D__inline__= as this bones sys/stat.h
+
+CFLAGS+= -m32 -D_GNU_SOURCE -D_XOPEN_SOURCE=600 -std=gnu++0x -c -Wall -pedantic -Wno-long-long -g -O0 -I.
+
+vp_hooks.o: vp_hooks.cxx
+	g++ $(CFLAGS) -o $@ $<
+
+all:  vp_hooks.o
+
+
+
+clean:
+	rm -rf *.o
+

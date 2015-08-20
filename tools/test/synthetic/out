@@ -1,0 +1,133 @@
+Args: opt -load ../../../Release+Asserts/lib/approx.so -stats -debug -o llvmprof.out -approx 
+Subtarget features: SSELevel 9, 3DNowLevel 0, 64bit 1
+Analyzing function: main
+
+Instruction scanning is done! Now performing instruction duplication......
+
+*** Duplicating producers of FP variables in function main ***
+Current FP instr   %C = alloca [100 x double], align 16
+Current FP instr   %0 = bitcast [100 x double]* %C to i8*
+ insert point is ---------------------   call void @llvm.lifetime.start(i64 800, i8* %0) #1
+Vectorized int to FP:   %S1_D = bitcast <2 x [100 x double]*> %splatS1_D.splat to <2 x i8*>
+the shuffled instruction is:   %SFS1_D = shufflevector <2 x i8*> %S1_D, <2 x i8*> %S1_D, <2 x i32> <i32 0, i32 1>
+Warning: This type is not handled
+Current FP instr   call void @llvm.lifetime.start(i64 800, i8* %0) #1
+Current FP instr   br label %for.body
+Current FP instr   %indvars.iv28 = phi i64 [ 0, %entry ], [ %indvars.iv.next29, %for.body ]
+the value of the 0th field of the PHI node is i64 0
+the value of the 1th field of the PHI node is   %indvars.iv.next29 = add nuw nsw i64 %indvars.iv28, 1
+The vectorized Phi node is   %VPhiS4_D = phi <2 x i64> [ zeroinitializer, %entry ], [ undef, %for.body ]
+Current FP instr   %arrayidx1 = getelementptr inbounds [100 x double]* @main.B, i64 0, i64 %indvars.iv28
+Current FP instr   %1 = load double* %arrayidx1, align 8, !tbaa !1
+vectorized load instruction:   %splatS6_D.splat = shufflevector <2 x double> %splatS6_D.splatinsert, <2 x double> undef, <2 x i32> zeroinitializer
+Current FP instr   %2 = trunc i64 %indvars.iv28 to i32
+Vectorized FPExtOrTrunc instruction is :   %S7_D = trunc <2 x i64> %VPhiS4_D to <2 x i32>
+the shuffled instruction is:   %SFS7_D = shufflevector <2 x i32> %S7_D, <2 x i32> %S7_D, <2 x i32> <i32 0, i32 1>
+Integer comparison   %EDCV0x7fff3f7fc830 = icmp ne <2 x i32> %S7_D, %SFS7_D
+Current FP instr   %conv = sitofp i32 %2 to double
+ insert point is ---------------------   %call = tail call double @pow(double %1, double %conv) #1
+Vectorized int to FP:   %convS8_D = sitofp <2 x i32> %S7_D to <2 x double>
+the shuffled instruction is:   %SFS8_D = shufflevector <2 x double> %convS8_D, <2 x double> %convS8_D, <2 x i32> <i32 0, i32 1>
+FP comparison here   %EDCV0x7fff3f7fc8301 = fcmp one <2 x double> %convS8_D, %SFS8_D number of operands: 2
+Current FP instr   %call = tail call double @pow(double %1, double %conv) #1
+used Instruction   %1 = load double* %arrayidx1, align 8, !tbaa !1
+replaced instruction   %vpowS9_D = call <2 x double> @llvm.pow.v2f64(<2 x double> %splatS6_D.splat, <2 x double> %insert1S9_D)
+used Instruction   %conv = sitofp i32 %2 to double
+replaced instruction   %vpowS9_D = call <2 x double> @llvm.pow.v2f64(<2 x double> %splatS6_D.splat, <2 x double> %convS8_D)
+the shuffled instruction is:   %SFS9_D = shufflevector <2 x double> %vpowS9_D, <2 x double> %vpowS9_D, <2 x i32> <i32 0, i32 1>
+FP comparison here   %EDCV0x7fff3f7fc8302 = fcmp one <2 x double> %vpowS9_D, %SFS9_D number of operands: 2
+Current FP instr   %add = fadd double %call, 1.000000e+00
+used Instruction   %call = tail call double @pow(double %1, double %conv) #1
+replaced instruction   %addS10_D = fadd <2 x double> %vpowS9_D, %insert1S10_D
+replaced instruction   %addS10_D = fadd <2 x double> %vpowS9_D, <double 1.000000e+00, double 1.000000e+00>
+the shuffled instruction is:   %SFS10_D = shufflevector <2 x double> %addS10_D, <2 x double> %addS10_D, <2 x i32> <i32 0, i32 1>
+FP comparison here   %EDCV0x7fff3f7fc8303 = fcmp one <2 x double> %addS10_D, %SFS10_D number of operands: 2
+Current FP instr   %arrayidx3 = getelementptr inbounds [100 x double]* %C, i64 0, i64 %indvars.iv28
+Current FP instr   store double %add, double* %arrayidx3, align 8, !tbaa !1
+New generated store instruction is:   store double %extractS12_D, double* %arrayidx3, align 8
+Current FP instr   %indvars.iv.next29 = add nuw nsw i64 %indvars.iv28, 1
+used Instruction   %indvars.iv28 = phi i64 [ 0, %entry ], [ %indvars.iv.next29, %for.body ]
+replaced instruction   %indvars.iv.next29S13_D = add <2 x i64> %VPhiS4_D, %insert1S13_D
+replaced instruction   %indvars.iv.next29S13_D = add <2 x i64> %VPhiS4_D, <i64 1, i64 1>
+the shuffled instruction is:   %SFS13_D = shufflevector <2 x i64> %indvars.iv.next29S13_D, <2 x i64> %indvars.iv.next29S13_D, <2 x i32> <i32 0, i32 1>
+Integer comparison   %EDCV0x7fff3f7fc8304 = icmp ne <2 x i64> %indvars.iv.next29S13_D, %SFS13_D
+Current FP instr   %exitcond30 = icmp eq i64 %indvars.iv.next29, 100
+used Instruction   %indvars.iv.next29 = add nuw nsw i64 %indvars.iv28, 1
+replaced instruction   %exitcond30S14_D = icmp eq <2 x i64> %indvars.iv.next29S13_D, %insert1S14_D
+replaced instruction   %exitcond30S14_D = icmp eq <2 x i64> %indvars.iv.next29S13_D, <i64 100, i64 100>
+the shuffled instruction is:   %SFS14_D = shufflevector <2 x i1> %exitcond30S14_D, <2 x i1> %exitcond30S14_D, <2 x i32> <i32 0, i32 1>
+Integer comparison   %EDCV0x7fff3f7fc8305 = icmp ne <2 x i1> %exitcond30S14_D, %SFS14_D
+Current FP instr   br i1 %exitcond30, label %for.body7, label %for.body
+Current FP instr   %indvars.iv = phi i64 [ %indvars.iv.next, %for.body7 ], [ 0, %for.body ]
+the value of the 0th field of the PHI node is   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
+the value of the 1th field of the PHI node is i64 0
+The vectorized Phi node is   %VPhiS16_D = phi <2 x i64> [ undef, %for.body7 ], [ zeroinitializer, %for.body ]
+Current FP instr   %arrayidx9 = getelementptr inbounds [100 x double]* %C, i64 0, i64 %indvars.iv
+Current FP instr   %3 = load double* %arrayidx9, align 8, !tbaa !1
+vectorized load instruction:   %splatS18_D.splat = shufflevector <2 x double> %splatS18_D.splatinsert, <2 x double> undef, <2 x i32> zeroinitializer
+Current FP instr   %call10 = tail call i32 (i8*, ...)* @printf(i8* getelementptr inbounds ([4 x i8]* @.str, i64 0, i64 0), double %3) #1
+Vectorized call:   %splatS19_D.splat = shufflevector <2 x i32> %splatS19_D.splatinsert, <2 x i32> undef, <2 x i32> zeroinitializer
+Current FP instr   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
+used Instruction   %indvars.iv = phi i64 [ %indvars.iv.next, %for.body7 ], [ 0, %for.body ]
+replaced instruction   %indvars.iv.nextS20_D = add <2 x i64> %VPhiS16_D, %insert1S20_D
+replaced instruction   %indvars.iv.nextS20_D = add <2 x i64> %VPhiS16_D, <i64 1, i64 1>
+the shuffled instruction is:   %SFS20_D = shufflevector <2 x i64> %indvars.iv.nextS20_D, <2 x i64> %indvars.iv.nextS20_D, <2 x i32> <i32 0, i32 1>
+Integer comparison   %EDCV0x7fff3f7fc8306 = icmp ne <2 x i64> %indvars.iv.nextS20_D, %SFS20_D
+Current FP instr   %exitcond = icmp eq i64 %indvars.iv.next, 100
+used Instruction   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
+replaced instruction   %exitcondS21_D = icmp eq <2 x i64> %indvars.iv.nextS20_D, %insert1S21_D
+replaced instruction   %exitcondS21_D = icmp eq <2 x i64> %indvars.iv.nextS20_D, <i64 100, i64 100>
+the shuffled instruction is:   %SFS21_D = shufflevector <2 x i1> %exitcondS21_D, <2 x i1> %exitcondS21_D, <2 x i32> <i32 0, i32 1>
+Integer comparison   %EDCV0x7fff3f7fc8307 = icmp ne <2 x i1> %exitcondS21_D, %SFS21_D
+Current FP instr   br i1 %exitcond, label %for.end13, label %for.body7
+Current FP instr   call void @llvm.lifetime.end(i64 800, i8* %0) #1
+Current FP instr   ret i32 1
+
+Instruction duplication is done! Now fixing the phi nodes and cleaning the instrumented scalar instructions.....
+
+
+Instruction cleaning is done! Now splitting the basic blocks according to the inserted error checking code....
+
+  %exitcond30S14_D = icmp eq <2 x i64> %indvars.iv.next29S13_D, <i64 100, i64 100> is the first instruction in the newly inserted comparison
+  br i1 %mskS15_D, label %for.body7, label %for.body is the terminator in new BB
+  %EDCV0x7fff3f7fc8304 = icmp ne <2 x i64> %indvars.iv.next29S13_D, %SFS13_D inserted comparison
+conditional branch:   br i1 %3, label %relExit, label %for.body.split
+  %convS8_D = sitofp <2 x i32> %S7_D to <2 x double> is the first instruction in the newly inserted comparison
+  br i1 %3, label %relExit, label %for.body.split is the terminator in new BB
+  %EDCV0x7fff3f7fc830 = icmp ne <2 x i32> %S7_D, %SFS7_D inserted comparison
+conditional branch:   br i1 %3, label %relExit, label %for.body.split8
+  %vpowS9_D = call <2 x double> @llvm.pow.v2f64(<2 x double> %splatS6_D.splat, <2 x double> %convS8_D) is the first instruction in the newly inserted comparison
+  br i1 %5, label %relExit, label %for.body.split is the terminator in new BB
+  %EDCV0x7fff3f7fc8301 = fcmp one <2 x double> %convS8_D, %SFS8_D inserted comparison
+conditional branch:   br i1 %5, label %relExit, label %for.body.split8.split
+  %addS10_D = fadd <2 x double> %vpowS9_D, <double 1.000000e+00, double 1.000000e+00> is the first instruction in the newly inserted comparison
+  br i1 %7, label %relExit, label %for.body.split is the terminator in new BB
+  %EDCV0x7fff3f7fc8302 = fcmp one <2 x double> %vpowS9_D, %SFS9_D inserted comparison
+conditional branch:   br i1 %7, label %relExit, label %for.body.split8.split.split
+  %arrayidx3 = getelementptr inbounds [100 x double]* %C, i64 0, i64 %indvars.iv28 is the first instruction in the newly inserted comparison
+  br i1 %9, label %relExit, label %for.body.split is the terminator in new BB
+  %EDCV0x7fff3f7fc8303 = fcmp one <2 x double> %addS10_D, %SFS10_D inserted comparison
+conditional branch:   br i1 %9, label %relExit, label %for.body.split8.split.split.split
+  %BCS15_D = bitcast <2 x i1> %exitcond30S14_D to i2 is the first instruction in the newly inserted comparison
+  br i1 %mskS15_D, label %for.body7, label %for.body is the terminator in new BB
+  %EDCV0x7fff3f7fc8305 = icmp ne <2 x i1> %exitcond30S14_D, %SFS14_D inserted comparison
+conditional branch:   br i1 %13, label %relExit, label %for.body.split.split
+  %exitcondS21_D = icmp eq <2 x i64> %indvars.iv.nextS20_D, <i64 100, i64 100> is the first instruction in the newly inserted comparison
+  br i1 %mskS22_D, label %for.end13, label %for.body7 is the terminator in new BB
+  %EDCV0x7fff3f7fc8306 = icmp ne <2 x i64> %indvars.iv.nextS20_D, %SFS20_D inserted comparison
+conditional branch:   br i1 %16, label %relExit, label %for.body7.split
+  %BCS22_D = bitcast <2 x i1> %exitcondS21_D to i2 is the first instruction in the newly inserted comparison
+  br i1 %mskS22_D, label %for.end13, label %for.body7 is the terminator in new BB
+  %EDCV0x7fff3f7fc8307 = icmp ne <2 x i1> %exitcondS21_D, %SFS21_D inserted comparison
+conditional branch:   br i1 %18, label %relExit, label %for.body7.split.split
+
+Instrumenation for Function main is done! You can generate code with LLC
+
+===-------------------------------------------------------------------------===
+                          ... Statistics Collected ...
+===-------------------------------------------------------------------------===
+
+ 6 APPROX - The number of dupliacted IR instructions
+ 1 APPROX - The number of functions greeted
+25 APPROX - The number of total IR instructions
+
