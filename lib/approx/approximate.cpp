@@ -71,9 +71,11 @@ cl::opt<bool> APVPCounter("ap-vp-counter",
 cl::opt<bool> APExcludeInfreq("ap-exclude-infrequent",
                             cl::desc("Exclude infrequently executed"),
                             cl::init(false));
-
 cl::opt<bool> APErrorChecking("ap-ecc",
                             cl::desc("Insert error checking on values"),
+                            cl::init(false));
+cl::opt<bool> CheckAll("ap-checkall",
+                            cl::desc("Error checking for all instructions"),
                             cl::init(true));
 cl::opt<bool> APDebug("ap-debug",
                             cl::desc("Do the debug stuff"),
@@ -134,9 +136,11 @@ void Approx::getAnalysisUsage(AnalysisUsage &AU) const{
 }
 
 bool Approx::runOnFunction(Function &F){
+
   std::string funcName = F.getName().str();
-  //if (funcName != "main")
+  //if (funcName != "_ZNK10FullMatrixIdE5vmultIfEEvR6VectorIT_ERKS4_b")
   //  return false;
+ 
   errs() << "Analyzing function: " << funcName << "\n"; 
 
   TD = &getAnalysis<DataLayout>();
@@ -145,6 +149,8 @@ bool Approx::runOnFunction(Function &F){
   for(tInstrToInfoObj::iterator iter = instrToInfoObj.begin(); iter != instrToInfoObj.end(); iter++){
     delete ((*iter).second);
   }
+
+  //initialization
   instrToInfoObj.clear();
   vcmpToCheckInst.clear();
   cmpInstInserted.clear();
@@ -191,13 +197,14 @@ bool Approx::runOnFunction(Function &F){
         for (User::op_iterator uit = pInst->op_begin(); uit != pInst->op_end(); ++uit) {
           Value *val = *uit;
           VectorType *opType = dyn_cast<VectorType>(val->getType());
-          if (opType && opType->getBitWidth() > 256) {
+         
+          if (opType && (opType->getBitWidth() == 512)) {
             isAvx = true;
             break;
           }
         }
         
-        if (pInst->getOpcode() != Instruction::ShuffleVector && (isAvx || numOfBits > 256)) {
+        if (pInst->getOpcode() != Instruction::ShuffleVector && (isAvx || numOfBits == 512)) {
         //if (isAvx || numOfBits > 256) {
           instrToInfoObj[pInst]->setAVXInst();
         }
@@ -207,7 +214,9 @@ bool Approx::runOnFunction(Function &F){
         else {
           if (vTy->isPtrOrPtrVectorTy()) {
             int ptrSize = TD->getPointerTypeSizeInBits(vTy);
-            if (numOfElem * ptrSize > 256) {
+            int totalBits = numOfElem * ptrSize;
+
+            if (totalBits == 512) {
               instrToInfoObj[pInst]->setAVXInst();
             }
             else if (numOfElem >= 2) {
@@ -257,6 +266,7 @@ bool Approx::runOnFunction(Function &F){
 
 #undef DEBUG_TYPE
 #define DEBUG_TYPE "DupProducers"
+
 int Approx::duplicateProducers(){
   int longestPath = 0;
 //  DEBUG(dbgs() << "*** Duplicating producers of state variables in function " <<  currF->getName() << " ***" << "\n");
@@ -267,12 +277,14 @@ int Approx::duplicateProducers(){
   Instruction *dupInst = NULL;
   //for(std::map<Instruction*, instrInfo*>::iterator iter = instrToInfoObj.begin(); iter != instrToInfoObj.end(); iter++) { 
   for (std::vector<Instruction*>::iterator it = instrVec.begin(); it != instrVec.end(); it++) {
+
     instrInfo *currInstInfo = instrToInfoObj[*it];
   //  if (currInstInfo->isVar() && scalarToVectorMap.find(*it) == scalarToVectorMap.end()){
     Instruction *currInst = *it;
     BasicBlock::iterator instIt = currInst;
     instIt++;
-    //errs() << "Current instr " << *currInst << " " << *currInst->getType() << "\n";
+    //errs() << "Current instr " << *currInst << " " << *currInst->getType() <<"  " << currInst->getOpcode() << "\n";
+
     if (scalarToVectorMap.find(currInst) == scalarToVectorMap.end() || currInst->getOpcode() == Instruction::PHI){
       if (handledByValue(currInst)) {
          DEBUG(dbgs() << "Handled by value (exact or range)" << "\n");
@@ -283,22 +295,24 @@ int Approx::duplicateProducers(){
         std::stringstream checkingName;
         if(currInstInfo->isVectorInst() && currInstInfo->isAVXInst()){       // if the current instruction is already vectorized, we can only do scalar duplication
           chainName << vectorDupName.str() << SV_chain << "_D";
-          checkingName << "EDCS" << chainName ;
+          checkingName << "EDCS" << chainName.str() ;
 
           dupInst = duplicateProdRec(currInst, chainName.str());
           if (dupInst != NULL && APErrorChecking) {
             //(errs() << "Duplicated instr " << *dupInst << "\n");
             DEBUG(dbgs() << "Duplicated instr " << *dupInst << "\n");
+
             if (needErrorChecking(instIt)) {
             //error checking
        	      insertCmp(currInst, dupInst, currInst, checkingName.str(), true);
               numOfCheckers++;
             }
+
           }
         }
         else {
           chainName << scalarDupName.str() << SV_chain << "_D";
-          checkingName << "EDCV" << chainName;
+          checkingName << "EDCV" << chainName.str();
           Instruction *vectorizedInst = duplicateScalarToVector(currInst, chainName.str()); 
           //errs() << "vectorizedInst " << *vectorizedInst << "\n";
             
@@ -314,8 +328,14 @@ int Approx::duplicateProducers(){
                 vectorizedInst = currInst;
             }*/
             
-            
-            if (needErrorChecking(instIt)) {
+            if (CheckAll) {
+                if (currInst->getOpcode () != Instruction::BitCast && currInst->getOpcode() != Instruction::Call) {
+                  dupInst = createShuffleInst(vectorizedInst, chainName.str());
+                  insertCmp(dupInst, dupInst, vectorizedInst, checkingName.str(), true);
+                  numOfCheckers++;
+                }
+            } 
+            else if (needErrorChecking(instIt)) {
               dupInst = createShuffleInst(vectorizedInst, chainName.str());
               insertCmp(dupInst, dupInst, vectorizedInst, checkingName.str(), true);
               numOfCheckers++;
@@ -450,6 +470,8 @@ Instruction* Approx::duplicateScalarToVector(Instruction *pInst, const std::stri
         break;
       case Instruction::Alloca:
         break;
+
+      //llvm terminators
       case Instruction::Ret:
         instrumentReturn(pInst, instName);
         break;
@@ -462,6 +484,7 @@ Instruction* Approx::duplicateScalarToVector(Instruction *pInst, const std::stri
       case Instruction::Invoke:
         duplicateScalarInvoke(pInst, instName);
         break;
+
       case Instruction::ExtractElement:
         duplicateExtractElement(pInst, instName);
         break;
@@ -474,6 +497,7 @@ Instruction* Approx::duplicateScalarToVector(Instruction *pInst, const std::stri
       case Instruction::ShuffleVector:
         duplicateShuffleVector(pInst, instName);
         break;
+
       case Instruction::PHI:
         //duplicatedInst = duplicatePhiNode(pInst, instName);
         duplicatePhiNodeVectorTy(pInst, instName);
@@ -505,6 +529,7 @@ Instruction* Approx::duplicateScalarToVector(Instruction *pInst, const std::stri
       case Instruction::Xor:
         duplicatedInst = duplicateScalarArithmetic(pInst, instName);
         break;
+
       case Instruction::Call: {
         CallInst *call = dyn_cast<CallInst> (pInst);
         //Type *retTy = call->getType();
@@ -539,6 +564,7 @@ Instruction* Approx::duplicateScalarToVector(Instruction *pInst, const std::stri
       case Instruction::SExt:
         duplicatedInst = duplicateFPTruncExt(pInst, instName);
         break;
+
       case Instruction::SIToFP:
       case Instruction::FPToSI:
       case Instruction::UIToFP:
@@ -548,6 +574,7 @@ Instruction* Approx::duplicateScalarToVector(Instruction *pInst, const std::stri
       //case Instruction::AddrSpaceCast:
         duplicatedInst = duplicateTypeConvert(pInst, instName);
         break;
+
       case Instruction::BitCast: {      
       //FIXME. is <2 x doubl>* a vectorTy or pointerTy? No matter what it is, don't duplicate it
         Value *oprand = pInst->getOperand(0);
@@ -559,6 +586,7 @@ Instruction* Approx::duplicateScalarToVector(Instruction *pInst, const std::stri
         }
         break;
       }
+
       default:
         break;
     }
@@ -1433,7 +1461,9 @@ Instruction* Approx::duplicateFPTruncExt(Instruction *pInst, const std::string& 
 
   bool avxOprand = false;
   Value *oprand = pInst->getOperand(0);
+   
   if (oprand->getType()->isVectorTy()) {
+
     VectorType *avxTy = dyn_cast<VectorType> (oprand->getType());
     if (avxTy->getBitWidth() == 256) {
       avxOprand = true;
@@ -1442,6 +1472,7 @@ Instruction* Approx::duplicateFPTruncExt(Instruction *pInst, const std::string& 
   
   VectorType *dstTy; 
   if (pInst->getType()->isVectorTy()) {
+
     VectorType *sseTy = dyn_cast<VectorType> (pInst->getType());
     if (avxOprand) {
       dstTy = VectorType::get(sseTy->getElementType(), sseTy->getNumElements());
@@ -1449,10 +1480,12 @@ Instruction* Approx::duplicateFPTruncExt(Instruction *pInst, const std::string& 
     else {
       dstTy = VectorType::get(sseTy->getElementType(), sseTy->getNumElements() * 2);
     }
+
   }
   else {
     dstTy = VectorType::get(pInst->getType(), VEC_LENGTH);
   }
+
   Value *vecConvert;
  
   //FIXME. There is a bug if the oprand is <4 x double/i64> because the duplicate of it would be <8 x double/i64> 
@@ -1505,7 +1538,6 @@ Instruction* Approx::duplicateTypeConvert(Instruction *pInst, const std::string&
   BasicBlock::iterator insertAt = pInst;
   insertAt++;
   IRBuilder<> builder(&*insertAt);
-  //errs() << " insert point is --------------------- " << *insertAt << "\n";
 
   bool avxOprand = false;
   Value *oprand = pInst->getOperand(0);
@@ -1644,7 +1676,6 @@ Instruction* Approx::duplicatePhiNode(Instruction *pInst, const std::string &ins
     insertAt++;
   }
   
-  //errs() << " insert point is --------------------- " << *insertAt << "\n";
 
   IRBuilder<> builder(&*insertAt);
   Value *phiNodeVal = dyn_cast<Value>(pInst);
@@ -2637,6 +2668,18 @@ void Approx::insertCmp(Instruction* insertPt, Instruction* dupInst, Instruction*
     //dynDupCount += 2*(PI->getExecutionCount(origInst->getParent()));
     if((origInst->getType())->isIntOrIntVectorTy() || 
         (origInst->getType())->isPointerTy()){
+      /*
+      if (origInst->getType()->isVectorTy()) {
+        LLVMContext &ctxt = currF->getContext();
+        VectorType *vecTy = dyn_cast<VectorType> (origInst->getType());
+        unsigned numOfElem = vecTy->getNumElements();
+        unsigned numOfBits = vecTy->getElementType()->getPrimitiveSizeInBits();
+        unsigned totalBits = vecTy->getBitWidth();
+        VectorType *dstTy = VectorType::get(Type::getIntNTy(ctxt, totalBits/numOfElem), numOfElem);
+        Value *mask = ConstantInt::get(Type::getIntNTy(ctxt, totalBits), 0);
+      
+      } */
+
       cmpVal = builder.CreateICmpNE(origInst, dupInst, instName);
       cmpInst = dyn_cast<Instruction> (cmpVal);
       //cmpInst = new ICmpInst(insertAt, ICmpInst::ICMP_NE, origInst, dupInst, instName); 
@@ -2706,8 +2749,15 @@ void Approx::splitBBAndPointExitBlock(){
         VectorType *vecTy = (VectorType *) operand->getType();
         //use number of elements and the width of each element in the vector type to determined if SSE/AVX is used for ps/pd
         unsigned numOfElem = vecTy->getNumElements();
-        unsigned numOfBits = vecTy->getElementType()->getPrimitiveSizeInBits();
+        //unsigned numOfBits = vecTy->getElementType()->getPrimitiveSizeInBits();
         unsigned totalBits = vecTy->getBitWidth();
+
+        //TODO: determine if it is sse/AVX instruction
+        if (totalBits <= 128)
+            totalBits = 128;
+        else
+            totalBits = 256;
+
         VectorType *dstTy = VectorType::get(Type::getIntNTy(ctxt, totalBits/numOfElem), numOfElem);
         Value *mask = ConstantInt::get(Type::getIntNTy(ctxt, totalBits), 0);
 
@@ -2718,13 +2768,15 @@ void Approx::splitBBAndPointExitBlock(){
         //use ptest+jne
 
         Value *sext;
-        if (numOfBits != 1) {
+        //if (numOfBits != 1) {
           sext = new SExtInst(dyn_cast<Value>(cmpInst), dstTy, "", termInst);
-        }
-        else {
-          sext = dyn_cast<Value> (cmpInst);
-        }
+        //}
+        //else {
+        //  sext = dyn_cast<Value> (cmpInst);
+        //}
+
         BitCastInst *nbits = new BitCastInst(sext, Type::getIntNTy(ctxt, totalBits), "", termInst);
+
         Instruction *tmp = new ICmpInst(termInst, ICmpInst::ICMP_NE, nbits, mask);
         BranchInst* condBr = BranchInst::Create(relExitBB, newBB, tmp, oldBB);
 
