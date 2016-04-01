@@ -28,6 +28,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/InstIterator.h"
+#include "llvm/Support/TimeValue.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/IR/IRBuilder.h"
@@ -73,7 +74,7 @@ cl::opt<bool> APExcludeInfreq("ap-exclude-infrequent",
                             cl::init(false));
 cl::opt<bool> APErrorChecking("ap-ecc",
                             cl::desc("Insert error checking on values"),
-                            cl::init(false));
+                            cl::init(true));
 cl::opt<bool> CheckAll("ap-checkall",
                             cl::desc("Error checking for all instructions"),
                             cl::init(true));
@@ -87,23 +88,29 @@ cl::opt<bool> scalarToVec("scalar-vector-convert",
                             cl::desc("duplicate scalr instructions and generate the corresponding vector instruction"),
                             cl::init(true));
 
+//Exit the application when ever an error is detected
+cl::opt<bool> ExitApp("exit-app-with-error",
+                            cl::desc("Exit the application when error an error is detected"),
+                            cl::init(true));
+
 static cl::opt<std::string>
 ProfileInfoFilename2("profile-info-file2", cl::init("llvmprof.out"),
                     cl::value_desc("filename"),
                     cl::desc("Profile file loaded by -profile-loader2"));
+
+
+const PointerType* C_POINTERTYPE = PointerType::get(IntegerType::get(llvm::getGlobalContext(), 8), 0);
+const IntegerType* CHARTYPE = IntegerType::get(llvm::getGlobalContext(), 8);
+const PointerType* C_STRINGTYPE = PointerType::getUnqual(IntegerType::get(llvm::getGlobalContext(), 8));
+
 STATISTIC(counter, "The number of functions greeted");
 STATISTIC(totalIR, "The number of total IR instructions");
 STATISTIC(duplicatedIR, "The number of dupliacted IR instructions");
 STATISTIC(numOfCheckers, "The number of inserted error checking code");
-//STATISTIC(expChecks, "The number of total expected value checks inserted");
 
 char Approx::ID = 0;
-//unsigned long long Approx::totStateVars = 0;
-//unsigned long long Approx::totStateVarsDyn = 0;
 //unsigned long long Approx::totalIRDyn = 0;
-//unsigned long long Approx::stateVarsDyn = 0;
 //unsigned long long Approx::duplicatedIRDyn = 0;
-//unsigned long long Approx::expChecksDyn = 0;
 unsigned long long Approx::totVars = 0;
 //unsigned long long Approx::totFPVarsDyn = 0;
 //unsigned long long Approx::totErrors = 0;
@@ -111,7 +118,16 @@ unsigned long long Approx::totVecInst = 0;
 bool Approx::flag = false;
 GlobalVariable* Approx::vpGlobal = NULL;
 
+//!keep the statitics of the total number of soft errors
+GlobalVariable* Approx::softErrorNumGobal = NULL;
+GlobalVariable* Approx::errorThreshGlobal = NULL;
+
+
+Instruction* Approx::lastWrongInstr = NULL;
 Value* Approx::exitStr = NULL;
+Value* Approx::exitDirectly = NULL;
+Value* Approx::errorStr = NULL;
+Value* Approx::printPC = NULL;
 
 bool Approx::doFinalization(Module &M){
   if(localStatsAP){
@@ -127,11 +143,6 @@ bool Approx::doFinalization(Module &M){
 static RegisterPass<Approx> X("approx", "Insert checking for values");
 void Approx::getAnalysisUsage(AnalysisUsage &AU) const{
   AU.addRequired<LoopInfo>();
-  if(APUseProfile){
-   // AU.addRequired<ProfileInfo>();
-   // AU.addRequired<LoaderPassB>();
-    //AU.addRequired<MyProfileInfo>();
-  }
   AU.addRequired<DataLayout>();
 }
 
@@ -250,7 +261,7 @@ bool Approx::runOnFunction(Function &F){
   errs() << "\nInstruction cleaning is done! Now splitting the basic blocks according to the inserted error checking code...." << "\n\n";
 
   if(APVPCounter){
-    createGlobal(); 
+    createGlobal("errorCount"); 
   }
   //split at inserted cmps and point to exit block
   if (APErrorChecking) {
@@ -398,14 +409,31 @@ bool Approx::needErrorChecking(Instruction *currInst) {
     if (!pInst)
         return false;
 
-    if (pInst->getOpcode() == Instruction::Store || pInst->getOpcode() == Instruction::Call)
-        return true;
-
     if (pInst->getOpcode() == Instruction::GetElementPtr) {
         pInst++;
         if (pInst && (pInst->getOpcode() == Instruction::Store || pInst->getOpcode() == Instruction::Call))
             return true;
     }
+
+    //if (pInst->getOpcode() == Instruction::Store || pInst->getOpcode() == Instruction::Call)
+    //    return true;
+
+    for (Value::use_iterator useIt = pInst->use_begin(), e = pInst->use_end(); useIt != e; ++useIt) {
+        Instruction *useInst = dyn_cast<Instruction> (*useIt);
+        if (useInst && (useInst->getOpcode() == Instruction::Store || useInst->getOpcode() == Instruction::Call))
+            return true;
+    }
+
+    Instruction *extractedInst;
+    if (scalarToVectorMap.find(currInst) != scalarToVectorMap.end() && scalarToVectorMap[pInst]->isInstrumented()) {
+        extractedInst = scalarToVectorMap[pInst]->extractFrom();
+        for (Value::use_iterator useIt = extractedInst->use_begin(), e = extractedInst->use_end(); useIt != e; ++useIt) {
+            Instruction *useInst = dyn_cast<Instruction> (*useIt);
+            if (useInst && (useInst->getOpcode() == Instruction::Store || useInst->getOpcode() == Instruction::Call))
+                return true;
+        }
+    }
+
     return false;
 }
 
@@ -1373,6 +1401,10 @@ Instruction* Approx::duplicateSelect(Instruction *pInst, const std::string& inst
 //%19 = icmp ne i32 %18, 0 
 //br i1 %19, label %true1, label %false2 
 //it generates shuffle, movd, test, jump
+//solution 3:
+//%16 = fcmp ogt <4 x float> %15, %cr
+//%17 = extractelement < 4 x float> %16, i32 0
+//br i1 %17, lable %true, lable %false
 Instruction* Approx::duplicateBranch(Instruction *pInst, const std::string& instName) {
   Instruction *newBr = NULL;
   IRBuilder<> builder(&*pInst);
@@ -1391,9 +1423,9 @@ Instruction* Approx::duplicateBranch(Instruction *pInst, const std::string& inst
   //Instruction *condInst = dyn_cast<Instruction> (condVal);
   Value *vecCond = insertScalarToVectorMap(condVal, instName);
 
-  Type *uTy;
+  //Type *uTy;
   //solution 1 
-  if (VEC_LENGTH == 2) 
+  /*if (VEC_LENGTH == 2) 
     uTy = Type::getInt64Ty(ctxt);
   else if (VEC_LENGTH == 4)
     uTy = Type::getInt32Ty(ctxt);
@@ -1406,6 +1438,7 @@ Instruction* Approx::duplicateBranch(Instruction *pInst, const std::string& inst
   //Value *constZero = ConstantInt::get(Type::getIntNTy(ctxt, VEC_LENGTH), 0);
   Value *constZero = ConstantInt::get(Type::getIntNTy(ctxt, 128), 0);
   Value *oneBitMask = builder.CreateICmpNE(mask, constZero, "msk" + instName);
+  */
 
   //solution 2
   /*if (VEC_LENGTH == 2) 
@@ -1422,6 +1455,10 @@ Instruction* Approx::duplicateBranch(Instruction *pInst, const std::string& inst
   Value *constZero = ConstantInt::get(Type::getInt32Ty(ctxt), 0);
   Value *oneBitMask = builder.CreateICmpNE(mask, constZero, "msk" + instName);
   */
+
+  Type* u32Ty = Type::getInt32Ty(ctxt);
+  Value* index = ConstantInt::get(u32Ty, 0);
+  Value* oneBitMask = builder.CreateExtractElement(vecCond, index, "extCmp"+instName);
 
   (dyn_cast<BranchInst> (pInst))->setCondition(oneBitMask);
   duplicatedIR++;
@@ -2459,7 +2496,7 @@ void Approx::deleteInstrDFS(Instruction *pInst) {
 
   Value *instVal = dyn_cast<Value> (pInst);
   if (instVal->getNumUses() == 0) { //this is the last instruction, it can be erased safely
-    for (User::op_iterator oit = pInst->op_begin(); oit != pInst->op_end(); ++oit) {
+   /* for (User::op_iterator oit = pInst->op_begin(); oit != pInst->op_end(); ++oit) {
       Instruction *opInst = dyn_cast<Instruction>(*oit);
       if (opInst && scalarToVectorMap.find(opInst) != scalarToVectorMap.end()) {
         scalarToVectorMap[opInst]->decrementLastUses();
@@ -2473,7 +2510,7 @@ void Approx::deleteInstrDFS(Instruction *pInst) {
     else if (scalarToVectorMap[pInst]->getLastUses() > 1) {
       //scalarToVectorMap[pInst]->decrementLastUses();
       return;
-    }
+    }*/
     pInst->eraseFromParent();
     if (scalarToVectorMap.find(pInst) != scalarToVectorMap.end()) {
       std::vector<Instruction*>::iterator it = find(instrVec.begin(), instrVec.end(), pInst);
@@ -2746,6 +2783,10 @@ void Approx::splitBBAndPointExitBlock(){
       if (cmpInst->getType()->isVectorTy()) {
         Value *oprnd = cmpInst->getOperand(0);
         Instruction *operand = dyn_cast<Instruction>(oprnd);
+        
+        //save the instruction
+        lastWrongInstr = operand;
+
         VectorType *vecTy = (VectorType *) operand->getType();
         //use number of elements and the width of each element in the vector type to determined if SSE/AVX is used for ps/pd
         unsigned numOfElem = vecTy->getNumElements();
@@ -2783,6 +2824,7 @@ void Approx::splitBBAndPointExitBlock(){
         DEBUG(errs() << "conditional branch: " << *condBr << "\n");
       }
       else {
+        nextNormalBB = newBB;
         BranchInst* condBr = BranchInst::Create(relExitBB, newBB, cmpInst, oldBB);
         DEBUG(errs() << "conditional branch: " << *condBr<< "\n");
       }
@@ -2802,19 +2844,13 @@ void Approx::splitBBAndPointExitBlock(){
 void Approx::createExitBB(){
   if(APExitBB){
     relExitBB = BasicBlock::Create(currF->getContext(), "relExit", currF);
-    Value* retVal = NULL;
+
+    //!create the error threshhold variable
+    createGlobal("errorThreshHold");
+
     //Constant* funcName = ConstantArray::get(F.getContext(), "myFunc");
     IRBuilder<> builder(relExitBB);
-    //exitString << "Reliability CMP failed in function \%s" << currF->getNameStr() << "\n";
-    if(!exitStr){
-      std::stringstream exitString;
-      exitString << "Reliability CMP failed in function, exit directly %s" << "\n";
-      exitStr = builder.CreateGlobalStringPtr(exitString.str().c_str(), "relFun");
-    }
-    Value* funcName = getOrCreateGlobalName();
 
-    std::vector<Type*> params;
-    //const Type* ret_t; //FIXME: Never used
     FunctionType* ft;
     LLVMContext &ctxt = currF->getContext();
     Type* intTp = Type::getInt32Ty(ctxt);
@@ -2823,10 +2859,207 @@ void Approx::createExitBB(){
     Module *M = currF->getParent();
 
     //insert the printf call
+    std::vector<Type*> params;
     params.push_back(ptr8Type);
     ft  = FunctionType::get(intTp, params, true);
     Constant* printFun = M->getOrInsertFunction("printf", ft);
+    std::stringstream errorString;
+
+
+    if (ExitApp) {          //!exit the application directly
+      if(!exitDirectly){
+        std::stringstream exitString;
+        exitString << "Reliability CMP failed in function, exit directly %s" << "\n";
+        exitDirectly = builder.CreateGlobalStringPtr(exitString.str().c_str(), "relFun");
+      }
+
+      Value* funcName = getOrCreateGlobalName();
+      builder.CreateCall2((Value*)printFun, exitDirectly, funcName);
+     
+      //insert the exit function
+      params.clear();
+      params.push_back(Type::getInt32Ty(currF->getContext()));
+      ft  = FunctionType::get(voidTp, params, false);
+      Value *constOne = ConstantInt::get(intTp, 1);
+      Constant *exitFunc = M->getOrInsertFunction("exit", ft);
+      //insert the exit function call
+      builder.CreateCall((Value*)exitFunc, constOne);
+      Value* retVal = NULL;
+      if(!(currF->getReturnType()->isVoidTy())){
+        retVal = Constant::getNullValue(currF->getReturnType());
+        builder.CreateRet(retVal);
+      }
+      else {
+          builder.CreateRetVoid();
+      }
+          
+    }
+    else {                
+      createErrorHandlerBB();
+      createExitAppBB();
+    
+      //!increment the error counter
+      increaseErrorCnt(builder);
+      
+      // !check if the number of errors is >= ERROR_THRESH
+      Value* equal = builder.CreateICmpEQ(dyn_cast<Value>(softErrorNumGobal), dyn_cast<Value>(errorThreshGlobal));
+      builder.CreateCondBr(equal, exitAppBB, errorHandlerBB);
+    }
+
+  }
+  return;
+}
+
+//!Dump out the error instruction
+Value* Approx::getErrorInstruction(IRBuilder<> &builder) {
+
+    std::string errorInfo;
+    raw_string_ostream rso(errorInfo);
+    lastWrongInstr->print(rso);
+    Value* errorVal =  builder.CreateGlobalStringPtr(errorInfo.c_str(), "WrongInst");
+
+    return errorVal;
+}
+
+//! Get the processor ID where the error happened
+int Approx::getProcessorID() {
+    int procID;
+
+    return procID;
+}
+
+//!Get the time stamp when the error happened
+std::string Approx::getTimeStamp() {
+    std::string timeStamp;
+    
+    sys::TimeValue now = sys::TimeValue().now();
+    timeStamp = now.str();
+
+    return timeStamp;
+}
+
+//!Get the PC for the error instruction
+Value* Approx::getPC(IRBuilder<>& builder) {
+    
+    Module *M = currF->getParent();
+    LLVMContext& ctxt = currF->getContext();
+    Type* i8Ty = Type::getInt8Ty(ctxt);
+    Type* i32Ty = Type::getInt32Ty(ctxt);
+    Value *constZero = ConstantInt::get(i32Ty, 0);
+
+    Function* llvm_returnAddr = Function::Create(
+       FunctionType::get(i8Ty, false),
+       GlobalValue::ExternalLinkage,
+       "llvm.returnaddress",
+       M);
+
+    Value* pc = builder.CreateCall(llvm_returnAddr, constZero);
+    
+    return pc;
+}
+
+//!Access to the cycle counter register
+Value* Approx::readCycleCounterReg(IRBuilder<>& builder) {
+
+    Module *M = currF->getParent();
+    LLVMContext& ctxt = currF->getContext();
+    Type* i64Ty = Type::getInt64Ty(ctxt);
+
+    Function* llvm_readCycleCnt = Function::Create(
+       FunctionType::get(i64Ty, false),
+       GlobalValue::ExternalLinkage,
+       "llvm.readcyclecounter",
+       M);
+
+    Value* readCycCnt = builder.CreateCall(llvm_readCycleCnt);
+    
+    return readCycCnt;
+}
+
+void Approx::increaseErrorCnt(IRBuilder<>& builder) {
+    
+    LLVMContext& ctxt = currF->getContext();
+    Type* i32Ty = Type::getInt32Ty(ctxt);
+    Value *constOne = ConstantInt::get(i32Ty, 1);
+   
+    Value* soft_error_cnt = getOrCreateGlobalVariable("errorCount");
+    soft_error_cnt = builder.CreateAdd(soft_error_cnt, constOne, "incrementErrorCnt"); 
+
+    softErrorNumGobal = dyn_cast<GlobalVariable>(soft_error_cnt);
+}
+
+void Approx::createErrorHandlerBB() {
+    errorHandlerBB = BasicBlock::Create(currF->getContext(), "errorHandler", currF);
+    IRBuilder<> builder(errorHandlerBB);
+        
+    FunctionType* ft;
+    LLVMContext &ctxt = currF->getContext();
+    Type* intTp = Type::getInt32Ty(ctxt);
+    Type* ptr8Type = Type::getInt8PtrTy(ctxt);
+    
+    Module *M = currF->getParent();
+    std::vector<Type*> params;
+    params.push_back(ptr8Type);
+    ft  = FunctionType::get(intTp, params, true);
+    Constant* printFun = M->getOrInsertFunction("printf", ft);
+    std::stringstream errorString;
+
+    //!get time stamp
+    std::string timeStr = "time: " + getTimeStamp();
+    Value* timeStamp = builder.CreateGlobalStringPtr(timeStr, "timeStamp");
+    builder.CreateCall((Value*)printFun, timeStamp);
+
+    //dump the instruction info
+    Value* errorVal = getErrorInstruction(builder);
+    if(!errorStr){
+      errorString << "A soft error is detection in instruction: %s" << "\n";
+      errorStr = builder.CreateGlobalStringPtr(errorString.str().c_str(), "printWrongInst");
+    }
+    builder.CreateCall2((Value*)printFun, errorStr, errorVal);
+
+    //! get the pc
+    Value* errorPC = getPC(builder);
+    if (!printPC) {
+      errorString << "Current PC: %s" << "\n";
+      printPC = builder.CreateGlobalStringPtr(errorString.str().c_str(), "printPC");
+    }
+    builder.CreateCall2((Value*)printFun, printPC, errorPC);
+
+    //continue executioin
+    builder.CreateBr(nextNormalBB); 
+
+    return;
+}
+
+//!exit the whole program
+void Approx::createExitAppBB() {
+
+    exitAppBB = BasicBlock::Create(currF->getContext(), "exitApplication", currF);
+    IRBuilder<>builder(exitAppBB);
+    
+    Value* funcName = getOrCreateGlobalName();
+
+    FunctionType* ft;
+    LLVMContext &ctxt = currF->getContext();
+    Type* intTp = Type::getInt32Ty(ctxt);
+    Type* voidTp = Type::getVoidTy(ctxt);
+    Type* ptr8Type = Type::getInt8PtrTy(ctxt);
+    
+    Module *M = currF->getParent();
+    std::vector<Type*> params;
+    params.push_back(ptr8Type);
+    ft  = FunctionType::get(intTp, params, true);
+    Constant* printFun = M->getOrInsertFunction("printf", ft);
+    std::stringstream errorString;
+
+    if(!exitStr){
+      std::stringstream exitString;
+      exitString << "Reliability CMP failed in function, exit directly %s" << "\n";
+      exitStr = builder.CreateGlobalStringPtr(exitString.str().c_str(), "relFun");
+    }
+
     builder.CreateCall2((Value*)printFun, exitStr, funcName);
+     
     //insert the exit function
     params.clear();
     params.push_back(Type::getInt32Ty(currF->getContext()));
@@ -2836,45 +3069,22 @@ void Approx::createExitBB(){
     //insert the exit function call
     builder.CreateCall((Value*)exitFunc, constOne);
 
-    //This doesn't seem to be the right way to do it: FIXME
+    //!create terminator
+    //FIXME This doesn't seem to be the right way to do it
     //What shoud be the terminator of block containing 
     //exit instruction?
+    Value* retVal = NULL;
     if(!(currF->getReturnType()->isVoidTy())){
       retVal = Constant::getNullValue(currF->getReturnType());
+      builder.CreateRet(retVal);
     }
-
-    //ReturnInst* retInst = ReturnInst::Create(currF->getContext(), retVal, relExitBB);
-    ReturnInst::Create(currF->getContext(), retVal, relExitBB);
-  }
-  return;
-}
-
-//handle errors
-void Approx::createIncRetBB() {
-    if(APExitBB){
-	    relExitBB = BasicBlock::Create(currF->getContext(), "relExit", currF);
-    	//Value* retVal = NULL;
-    	//Constant* funcName = ConstantArray::get(F.getContext(), "myFunc");
-    	IRBuilder<> builder(relExitBB);
-        //exitString << "Reliability CMP failed in function \%s" << currF->getNameStr() << "\n";
-   	    if(!exitStr){
-    	    std::stringstream exitString;
-            exitString << "Reliability CMP failed in function, increment the error count by 1 %s" << "\n";
-            exitStr = builder.CreateGlobalStringPtr(exitString.str().c_str(), "relFun");
-        }
-        
-
+    else {
+      builder.CreateRetVoid();
     }
-    return;
 }
 
 void Approx::createEDCECCBB() {
   return;
-}
-
-bool Approx::breakRecDuplication(Instruction* cInst, Instruction* opnd){
-  bool retVal = false;
-  return retVal;
 }
 
 Value* Approx::getOrCreateGlobalName(){                                                                                                                                                  
@@ -2883,7 +3093,7 @@ Value* Approx::getOrCreateGlobalName(){
   }
   else{
     IRBuilder<> Builder(&currF->getEntryBlock());
-    Value* bbName = Builder.CreateGlobalStringPtr(currF->getName(), "func");
+    Value* bbName = Builder.CreateGlobalStringPtr(currF->getName(), "ErrorHandler");
     FunctionToGlobalName[currF] = bbName;
     return bbName;
   }
@@ -2902,15 +3112,27 @@ Value* Approx::getOrCreateGlobalName(BasicBlock* bb){
   }
 }
 
+Value* Approx::getOrCreateGlobalVariable(std::string name) {
+    createGlobal(name);
+    return softErrorNumGobal;
+}
+
+bool Approx::breakRecDuplication(Instruction* cInst, Instruction* opnd){
+    bool retVal = false;
+    return retVal;
+}
+
 bool Approx::handledByValue(Instruction* inst){
   bool isInValueSet = (valueCheckSet.find(inst) != valueCheckSet.end());
   bool isInValueRangeSet = (valueRangeCheckSet.find(inst) != valueRangeCheckSet.end());
   return (isInValueSet || isInValueRangeSet);
 }
 
-void Approx::createGlobal(){
-  if(vpGlobal == NULL){
-    Module *M = currF->getParent();
+void Approx::createGlobal(const std::string name){
+
+  Module *M = currF->getParent();
+ 
+  if(name  == "vpCount" && vpGlobal == NULL){
     GlobalVariable* sigVar = new GlobalVariable(*M,
                IntegerType::get(M->getContext(), 32),
                false,
@@ -2921,6 +3143,30 @@ void Approx::createGlobal(){
     sigVar->setInitializer(const_int32_8);
     vpGlobal = sigVar;
   }
+  
+  else if (name == "errorCount" && softErrorNumGobal == NULL) {
+     GlobalVariable* seErrVar = new GlobalVariable(*M,
+               IntegerType::get(M->getContext(), 32),
+               false,
+               GlobalValue::ExternalLinkage,
+               0,
+               "soft_Error_Count");
+    ConstantInt* const_int32_8 = ConstantInt::get(M->getContext(), APInt(32, StringRef("0"), 10));
+    seErrVar->setInitializer(const_int32_8);
+    softErrorNumGobal = seErrVar;
+  }
+  else if (name == "errorThreshHold" && errorThreshGlobal == NULL) {
+     GlobalVariable* errorThresh = new GlobalVariable(*M,
+               IntegerType::get(M->getContext(), 32),
+               false,
+               GlobalValue::ExternalLinkage,
+               0,
+               "soft_error_thresh");
+    ConstantInt* const_int32 = ConstantInt::get(IntegerType::get(llvm::getGlobalContext(), 32), ERROR_THRESH);
+    errorThresh->setInitializer(const_int32);
+    errorThreshGlobal = errorThresh;
+  }
+
 }
 
 int Approx::getSize(Type* ty){                                                                                                                                                             

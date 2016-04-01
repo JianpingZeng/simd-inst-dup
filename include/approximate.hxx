@@ -12,6 +12,8 @@
 #include "VP/VPProfiling.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Type.h"
 #include "llvm/IR/IRBuilder.h"
 #include "MyProfileInfo.h"
 #include <vector>
@@ -19,10 +21,11 @@
 #include <set>
 #include <queue>
 
-#define ERROR_THRESH 1000000
+using namespace llvm;
+
+#define ERROR_THRESH 8
 #define VEC_LENGTH 2
 
-using namespace llvm;
 class instrInfo;
 namespace {
   //class LoaderPass2;
@@ -60,12 +63,24 @@ private:
 // ----------- end -------------------------------------------
   static bool flag;
   static GlobalVariable* vpGlobal;
+  static GlobalVariable* softErrorNumGobal;
+  static GlobalVariable* errorThreshGlobal;
   DataLayout* TD;
   Function* currF;
   LoopInfo* LI;
 
+  //! record the last instruction has flipped bit
+  static Instruction *lastWrongInstr;
+
+  //! Error handling block
   BasicBlock* relExitBB;
+  BasicBlock* exitAppBB;
+  BasicBlock* errorHandlerBB;
+  BasicBlock* nextNormalBB;
   static Value *exitStr;
+  static Value *exitDirectly;
+  static Value *errorStr;
+  static Value *printPC;
 
   //data structures
   //vector<Instruction*> stateVars;
@@ -100,11 +115,11 @@ private:
   Value* getScalarValueFromInstr(Instruction *srcInst);
   void myReplaceUsesOfWith(Value *oldVal, Instruction *dupInst, Value *newVal);
   void sweepMarkedInstr();
-  bool breakRecDuplication(Instruction* cInst, Instruction* opnd);
   void insertCmp(Instruction* insertPt, Instruction* dupInst, Instruction* origInst, const std::string &instName, bool insertAfter=false);
   Value* insertScalarToVectorMap(Value *key, const std::string &instName);
   bool extractableVectorValue(Instruction *pInst);
   bool isPrimitiveType(const Instruction *pInst);
+  bool breakRecDuplication(Instruction* cInst, Instruction* opnd);
   Value *createMask(const Instruction *pInst);
   Value *createInsertElementMask(const Instruction *pInst, bool doubleSize);
   Value *extractMask(const Instruction *pInst);
@@ -159,12 +174,24 @@ private:
   void splitBBAndPointExitBlock();
   Value* getOrCreateGlobalName();                                                                                                                                                           
   Value* getOrCreateGlobalName(BasicBlock* bb);
+  Value* getOrCreateGlobalVariable(std::string name);
+
+  void increaseErrorCnt(IRBuilder<>& builder);
+
   void createExitBB();
-  void createIncRetBB();
+  void createExitAppBB();
+  void createErrorHandlerBB();
   void createEDCECCBB();
 
+  Value *getErrorInstruction(IRBuilder<> &builder);
+  int getProcessorID();
+  Value *getPC(IRBuilder<>& builder);
+
+  std::string getTimeStamp();
+  Value* readCycleCounterReg(IRBuilder<>&builder);
+
   bool handledByValue(Instruction* inst);
-  void createGlobal();
+  void createGlobal(const std::string name);
   int getSize(Type* ty);
 };
 
